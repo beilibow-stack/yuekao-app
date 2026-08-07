@@ -1,1 +1,7 @@
-/Users/bow/.zprofile:11: no such file or directory: /usr/local/bin/brew
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+};
+
+export default nextConfig;

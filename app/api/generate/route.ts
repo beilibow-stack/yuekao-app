@@ -51,6 +51,13 @@ type GeneratedResult = {
   questions: GeneratedQuestion[];
 };
 
+type ChatCompletion = {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: { content?: string | null };
+  }>;
+};
+
 function isGeneratedResult(value: unknown): value is GeneratedResult {
   if (!value || typeof value !== "object") return false;
   const result = value as Partial<GeneratedResult>;
@@ -95,7 +102,9 @@ export async function POST(request: Request) {
     const apiKey = process.env.LLM_API_KEY;
     const baseUrl = (process.env.LLM_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
     const model = process.env.LLM_MODEL ?? "gpt-5.6-luna";
-    const isOpenAI = new URL(baseUrl).hostname === "api.openai.com";
+    const providerHostname = new URL(baseUrl).hostname;
+    const isOpenAI = providerHostname === "api.openai.com";
+    const isDeepSeek = providerHostname === "api.deepseek.com";
 
     if (!apiKey) {
       return NextResponse.json(
@@ -104,48 +113,70 @@ export async function POST(request: Request) {
       );
     }
 
-    const upstream = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `请分析下面这道错题或学习困惑，并按规定生成两道原创变式题：\n\n${question}`,
-          },
-        ],
-        response_format: { type: "json_object" },
-        ...(isOpenAI ? { max_completion_tokens: 1800 } : { max_tokens: 1800 }),
-      }),
-      signal: AbortSignal.timeout(45_000),
-      cache: "no-store",
-    });
+    // DeepSeek 官方说明 JSON Output 偶尔会返回空 content，因此最多自动重试一次。
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            {
+              role: "user",
+              content: `请分析下面这道错题或学习困惑，并按规定生成两道原创变式题：\n\n${question}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          ...(isDeepSeek ? { thinking: { type: "disabled" } } : {}),
+          ...(isOpenAI
+            ? { max_completion_tokens: 4096 }
+            : { max_tokens: 4096 }),
+        }),
+        signal: AbortSignal.timeout(55_000),
+        cache: "no-store",
+      });
 
-    if (!upstream.ok) {
-      const detail = await upstream.text();
-      console.error("LLM upstream error", upstream.status, detail.slice(0, 500));
-      return NextResponse.json(
-        { error: "模型服务暂时不可用，请稍后重试。" },
-        { status: upstream.status === 429 ? 429 : 502 },
-      );
+      if (!upstream.ok) {
+        const detail = await upstream.text();
+        console.error("LLM upstream error", upstream.status, detail.slice(0, 500));
+        return NextResponse.json(
+          { error: "模型服务暂时不可用，请稍后重试。" },
+          { status: upstream.status === 429 ? 429 : 502 },
+        );
+      }
+
+      const completion = (await upstream.json()) as ChatCompletion;
+      const choice = completion.choices?.[0];
+      const content = choice?.message?.content?.trim();
+
+      if (!content) {
+        console.warn("LLM returned empty content", {
+          attempt,
+          finishReason: choice?.finish_reason,
+        });
+        continue;
+      }
+
+      try {
+        const result = parseModelJson(content);
+        if (!isGeneratedResult(result)) {
+          throw new Error("模型返回结构不符合约定");
+        }
+        return NextResponse.json(result);
+      } catch (parseError) {
+        console.warn("LLM JSON parse/validation failed", {
+          attempt,
+          finishReason: choice?.finish_reason,
+          error: parseError instanceof Error ? parseError.message : String(parseError),
+        });
+      }
     }
 
-    const completion = (await upstream.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = completion.choices?.[0]?.message?.content;
-
-    if (!content) throw new Error("模型未返回文本内容");
-
-    const result = parseModelJson(content);
-    if (!isGeneratedResult(result)) throw new Error("模型返回结构不符合约定");
-
-    return NextResponse.json(result);
+    throw new Error("模型连续两次未返回有效 JSON 内容");
   } catch (error) {
     console.error("Generate route error", error);
     const timedOut = error instanceof Error && error.name === "TimeoutError";

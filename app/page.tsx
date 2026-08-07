@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 
-type Tab = "mistakes" | "cards";
+type Tab = "today" | "mistakes" | "cards";
 
 type KnowledgeCard = {
   category: string;
@@ -39,7 +39,27 @@ type ReviewItem = {
 
 type PracticeStep = "brief" | "question" | "summary";
 
+type DailyTask = {
+  id: string;
+  category: string;
+  question: string;
+  options: string[];
+  answer: string;
+  explanation: string;
+  reviewId?: string;
+};
+
+type DailyProgress = {
+  date: string;
+  tasks: DailyTask[];
+  index: number;
+  answers: string[];
+  choice: string;
+  answered: boolean;
+};
+
 const REVIEW_KEY = "yuekao-review-v1";
+const DAILY_KEY = "yuekao-daily-v1";
 const DAY = 24 * 60 * 60 * 1000;
 const REVIEW_INTERVALS = [1, 3, 7] as const;
 
@@ -101,6 +121,87 @@ const knowledgeCards: KnowledgeCard[] = [
   },
 ];
 
+const abilityQuestions: DailyTask[] = [
+  {
+    id: "ability-logic-1",
+    category: "判断推理 · 削弱",
+    question: "某市上线错峰预约系统后，窗口平均排队时间下降。负责人据此认为，该系统有效缓解了办事拥堵。以下哪项最能削弱这一结论？",
+    options: [
+      "A. 上线同期，多个高频事项改为全程网上办理",
+      "B. 大多数群众认为预约页面操作简单",
+      "C. 该系统的开发成本低于原计划",
+      "D. 部分窗口工作人员接受了操作培训",
+    ],
+    answer: "A",
+    explanation: "题干用‘上线系统’解释‘排队下降’。A 项给出同期发生的另一关键原因，说明排队下降未必由预约系统造成，属于典型的另有他因。",
+  },
+  {
+    id: "ability-number-1",
+    category: "数量关系 · 工程问题",
+    question: "甲单独完成一项工程需 12 天，乙单独完成需 18 天。两人合作 4 天后，剩余工程由甲单独完成，还需多少天？",
+    options: ["A. 4 天", "B. 5 又 1/3 天", "C. 6 天", "D. 8 天"],
+    answer: "B",
+    explanation: "设总量为 36，甲、乙效率分别为 3 和 2。合作 4 天完成 20，剩余 16，甲单独需 16÷3=5 又 1/3 天。工程问题优先用最小公倍数设总量。",
+  },
+  {
+    id: "ability-language-1",
+    category: "言语理解 · 逻辑填空",
+    question: "基层治理不能只靠临时性的集中整治，更要建立常态长效机制，避免问题反复出现、治理成效______。填入最恰当的一项是？",
+    options: ["A. 功亏一篑", "B. 昙花一现", "C. 差强人意", "D. 一蹴而就"],
+    answer: "B",
+    explanation: "前文强调‘临时’与‘长效’的对立，空格对应成效持续时间短。‘昙花一现’最贴合；‘功亏一篑’强调最后关头失败。",
+  },
+];
+
+const fallbackReview: DailyTask = {
+  id: "review-fallback",
+  category: "易错回顾 · 科学推理",
+  question: "同一实心物体分别放入水和盐水中，均漂浮。关于两次所受浮力和排开液体体积，下列说法正确的是？",
+  options: ["A. 浮力相同，盐水中排开体积更小", "B. 浮力相同，盐水中排开体积更大", "C. 水中浮力更大", "D. 盐水中浮力更大"],
+  answer: "A",
+  explanation: "漂浮时浮力等于物体重力，因此两次浮力相同；由 F浮=ρ液gV排，盐水密度更大，所以排开体积更小。",
+};
+
+function localDateKey() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function seedFromDate(date: string) {
+  return Number(date.replaceAll("-", "")) || 0;
+}
+
+function createDailyTasks(date: string, reviews: ReviewItem[]): DailyTask[] {
+  const seed = seedFromDate(date);
+  const due = reviews.find((item) => item.dueAt <= Date.now());
+  const reviewTask: DailyTask = due
+    ? {
+        id: `review-${due.id}`,
+        category: `到期错题 · ${due.source}`,
+        question: due.question,
+        options: due.options,
+        answer: due.answer,
+        explanation: due.explanation,
+        reviewId: due.id,
+      }
+    : fallbackReview;
+  const ability = abilityQuestions[seed % abilityQuestions.length];
+  const knowledge = knowledgeCards[seed % knowledgeCards.length];
+  return [
+    reviewTask,
+    ability,
+    {
+      id: `knowledge-${seed % knowledgeCards.length}`,
+      category: `广东常识 · ${knowledge.category}`,
+      question: knowledge.question,
+      options: knowledge.options.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`),
+      answer: knowledge.answer,
+      explanation: knowledge.explanation,
+    },
+  ];
+}
+
 function Icon({ name, className = "h-5 w-5" }: { name: string; className?: string }) {
   const paths: Record<string, ReactNode> = {
     pen: <><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></>,
@@ -114,7 +215,7 @@ function Icon({ name, className = "h-5 w-5" }: { name: string; className?: strin
 }
 
 export default function Page() {
-  const [tab, setTab] = useState<Tab>("mistakes");
+  const [tab, setTab] = useState<Tab>("today");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GeneratedResult | null>(null);
@@ -134,6 +235,13 @@ export default function Page() {
   const [flipped, setFlipped] = useState(false);
   const [cardChoice, setCardChoice] = useState("");
   const [cardAnswered, setCardAnswered] = useState(false);
+  const [todayKey, setTodayKey] = useState("");
+  const [dailyTasks, setDailyTasks] = useState<DailyTask[]>([]);
+  const [dailyIndex, setDailyIndex] = useState(0);
+  const [dailyChoice, setDailyChoice] = useState("");
+  const [dailyAnswered, setDailyAnswered] = useState(false);
+  const [dailyAnswers, setDailyAnswers] = useState<string[]>([]);
+  const [dailyReady, setDailyReady] = useState(false);
 
   const currentCard = knowledgeCards[cardIndex];
   const dueReviews = useMemo(
@@ -141,6 +249,10 @@ export default function Page() {
     [reviewItems],
   );
   const activeReview = dueReviews[0];
+
+  useEffect(() => {
+    setTodayKey(localDateKey());
+  }, []);
 
   useEffect(() => {
     try {
@@ -157,6 +269,42 @@ export default function Page() {
     if (!reviewLoaded) return;
     window.localStorage.setItem(REVIEW_KEY, JSON.stringify(reviewItems));
   }, [reviewItems, reviewLoaded]);
+
+  useEffect(() => {
+    if (!todayKey || !reviewLoaded || dailyReady) return;
+    try {
+      const stored = window.localStorage.getItem(DAILY_KEY);
+      if (stored) {
+        const progress = JSON.parse(stored) as DailyProgress;
+        if (progress.date === todayKey && progress.tasks?.length === 3) {
+          setDailyTasks(progress.tasks);
+          setDailyIndex(progress.index);
+          setDailyAnswers(progress.answers ?? []);
+          setDailyChoice(progress.choice ?? "");
+          setDailyAnswered(Boolean(progress.answered));
+          setDailyReady(true);
+          return;
+        }
+      }
+    } catch {
+      // 当日进度异常时重新生成，不影响错题本。
+    }
+    setDailyTasks(createDailyTasks(todayKey, reviewItems));
+    setDailyReady(true);
+  }, [dailyReady, reviewItems, reviewLoaded, todayKey]);
+
+  useEffect(() => {
+    if (!dailyReady || !todayKey || dailyTasks.length !== 3) return;
+    const progress: DailyProgress = {
+      date: todayKey,
+      tasks: dailyTasks,
+      index: dailyIndex,
+      answers: dailyAnswers,
+      choice: dailyChoice,
+      answered: dailyAnswered,
+    };
+    window.localStorage.setItem(DAILY_KEY, JSON.stringify(progress));
+  }, [dailyAnswered, dailyAnswers, dailyChoice, dailyIndex, dailyReady, dailyTasks, todayKey]);
 
   function scheduleReview(
     question: { text: string; options: string[]; answer: string; explanation: string },
@@ -180,6 +328,54 @@ export default function Page() {
         ? items.map((item) => (item.id === existing.id ? next : item))
         : [next, ...items];
     });
+  }
+
+  function updateReviewResult(reviewId: string, correct: boolean) {
+    setReviewItems((items) =>
+      items.flatMap((item): ReviewItem[] => {
+        if (item.id !== reviewId) return [item];
+        if (!correct) return [{ ...item, stage: 0, dueAt: Date.now() + DAY }];
+        if (item.stage === 2) return [];
+        const nextStage = (item.stage + 1) as 1 | 2;
+        return [{
+          ...item,
+          stage: nextStage,
+          dueAt: Date.now() + REVIEW_INTERVALS[nextStage] * DAY,
+        }];
+      }),
+    );
+  }
+
+  function submitDailyAnswer() {
+    const task = dailyTasks[dailyIndex];
+    if (!task || !dailyChoice || dailyAnswered) return;
+    const correct = dailyChoice === task.answer;
+    setDailyAnswered(true);
+    setDailyAnswers((values) => {
+      const next = [...values];
+      next[dailyIndex] = dailyChoice;
+      return next;
+    });
+    if (task.reviewId) {
+      updateReviewResult(task.reviewId, correct);
+    } else if (!correct) {
+      scheduleReview(
+        {
+          text: task.question,
+          options: task.options,
+          answer: task.answer,
+          explanation: task.explanation,
+        },
+        task.category,
+      );
+    }
+  }
+
+  function nextDailyQuestion() {
+    if (!dailyAnswered) return;
+    setDailyIndex((value) => value + 1);
+    setDailyChoice("");
+    setDailyAnswered(false);
   }
 
   async function generate(event: FormEvent) {
@@ -262,28 +458,7 @@ export default function Page() {
   function finishReviewItem() {
     if (!activeReview || !reviewAnswered) return;
     const correct = reviewChoice === activeReview.answer;
-    setReviewItems((items) => {
-      if (!correct) {
-        return items.map((item) =>
-          item.id === activeReview.id
-            ? { ...item, stage: 0, dueAt: Date.now() + DAY }
-            : item,
-        );
-      }
-      if (activeReview.stage === 2) {
-        return items.filter((item) => item.id !== activeReview.id);
-      }
-      const nextStage = (activeReview.stage + 1) as 1 | 2;
-      return items.map((item) =>
-        item.id === activeReview.id
-          ? {
-              ...item,
-              stage: nextStage,
-              dueAt: Date.now() + REVIEW_INTERVALS[nextStage] * DAY,
-            }
-          : item,
-      );
-    });
+    updateReviewResult(activeReview.id, correct);
     setReviewedCount((value) => value + 1);
     setReviewChoice("");
     setReviewAnswered(false);
@@ -303,7 +478,87 @@ export default function Page() {
         </header>
 
         <div className="flex-1 overflow-x-hidden px-5 pb-28 pt-5">
-          {tab === "mistakes" ? (
+          {tab === "today" ? (
+            <section className="animate-in">
+              <div className="mb-5 flex items-start justify-between">
+                <div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">今天只做 3 题</span>
+                  <h2 className="mt-3 text-2xl font-bold tracking-tight">今日上岸训练</h2>
+                  <p className="mt-1.5 text-sm text-slate-500">复习一题，补弱一题，广东常识一题。</p>
+                </div>
+                <div className="rounded-2xl bg-white px-3 py-2 text-center shadow-sm">
+                  <p className="text-lg font-black text-emerald-700">5</p>
+                  <p className="text-[10px] text-slate-400">分钟</p>
+                </div>
+              </div>
+
+              <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-700">今日进度</span>
+                  <span className="font-semibold text-emerald-700">{Math.min(dailyIndex, 3)} / 3</span>
+                </div>
+                <div className="mt-2.5 h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${(Math.min(dailyIndex, 3) / 3) * 100}%` }} />
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px] font-semibold text-slate-400">
+                  {['错题复习', '能力补弱', '广东常识'].map((label, index) => (
+                    <span key={label} className={index < dailyIndex ? "text-emerald-600" : index === dailyIndex ? "text-slate-700" : ""}>{index < dailyIndex ? "✓ " : ""}{label}</span>
+                  ))}
+                </div>
+              </div>
+
+              {!dailyReady ? (
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6">
+                  <div className="h-4 w-24 animate-pulse rounded bg-slate-100" />
+                  <div className="mt-5 h-6 w-full animate-pulse rounded bg-slate-100" />
+                  <div className="mt-3 h-6 w-3/4 animate-pulse rounded bg-slate-100" />
+                </div>
+              ) : dailyIndex >= dailyTasks.length ? (
+                <div className="overflow-hidden rounded-[30px] bg-[#123c32] p-7 text-white shadow-xl shadow-emerald-950/15">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-400/20 text-3xl">🎯</div>
+                  <p className="mt-5 text-xs font-bold tracking-widest text-emerald-300">TODAY COMPLETED</p>
+                  <h3 className="mt-2 text-2xl font-black">今天的 3 题完成了</h3>
+                  <div className="mt-5 flex items-end gap-2"><span className="text-5xl font-black">{dailyAnswers.filter((value, index) => value === dailyTasks[index]?.answer).length}</span><span className="pb-1 text-emerald-100/60">/ 3 正确</span></div>
+                  <p className="mt-4 text-sm leading-6 text-emerald-50/75">答错的题已经自动放进 1 / 3 / 7 天复习队列。今天到这里就够了，保持每天都来。</p>
+                  <button type="button" onClick={() => setTab("mistakes")} className="mt-6 w-full rounded-2xl bg-white py-3.5 text-sm font-bold text-emerald-800">还有时间，消化一道错题</button>
+                </div>
+              ) : (() => {
+                const task = dailyTasks[dailyIndex];
+                return (
+                  <article className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_12px_35px_rgba(15,23,42,0.06)]">
+                    <div className="flex items-center justify-between">
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">{task.category}</span>
+                      <span className="text-xs font-semibold text-slate-400">第 {dailyIndex + 1} 题</span>
+                    </div>
+                    <p className="mt-5 text-[16px] font-bold leading-7">{task.question}</p>
+                    <div className="mt-5 space-y-2.5">
+                      {task.options.map((option, index) => {
+                        const letter = option.match(/^[A-D]/)?.[0] ?? String.fromCharCode(65 + index);
+                        const correct = dailyAnswered && letter === task.answer;
+                        const wrong = dailyAnswered && letter === dailyChoice && letter !== task.answer;
+                        return (
+                          <button key={option} type="button" disabled={dailyAnswered} onClick={() => setDailyChoice(letter)} className={`w-full rounded-2xl border px-4 py-3.5 text-left text-sm font-medium leading-5 transition active:scale-[0.99] ${correct ? "border-emerald-500 bg-emerald-50 text-emerald-800" : wrong ? "border-red-400 bg-red-50 text-red-700" : dailyChoice === letter ? "border-emerald-500 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                            {option}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!dailyAnswered ? (
+                      <button type="button" disabled={!dailyChoice} onClick={submitDailyAnswer} className="mt-5 w-full rounded-2xl bg-emerald-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-600/15 disabled:bg-slate-300 disabled:shadow-none">提交答案</button>
+                    ) : (
+                      <div className="mt-5 animate-in">
+                        <div className={`rounded-2xl p-4 ${dailyChoice === task.answer ? "bg-emerald-50" : "bg-red-50"}`}>
+                          <p className={`font-bold ${dailyChoice === task.answer ? "text-emerald-800" : "text-red-700"}`}>{dailyChoice === task.answer ? "答对了 · 思路稳住" : `答错了 · 正确答案 ${task.answer}`}</p>
+                          <p className="mt-2 text-sm leading-6 text-slate-600">{task.explanation}</p>
+                        </div>
+                        <button type="button" onClick={nextDailyQuestion} className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-3.5 text-sm font-bold text-white">{dailyIndex === 2 ? "查看今日结果" : "下一题"} <Icon name="arrow" className="h-4 w-4" /></button>
+                      </div>
+                    )}
+                  </article>
+                );
+              })()}
+            </section>
+          ) : tab === "mistakes" ? (
             <section className="animate-in">
               <div className="mb-5">
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800"><Icon name="fire" className="h-3.5 w-3.5" /> 错一道，会一类</span>
@@ -489,7 +744,8 @@ export default function Page() {
         </div>
 
         <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-md border-t border-slate-200/70 bg-white/90 px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={() => setTab("today")} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-semibold transition ${tab === "today" ? "bg-emerald-50 text-emerald-700" : "text-slate-400"}`}><Icon name="check" />今日训练</button>
             <button onClick={() => setTab("mistakes")} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-semibold transition ${tab === "mistakes" ? "bg-emerald-50 text-emerald-700" : "text-slate-400"}`}><Icon name="pen" />错题消化</button>
             <button onClick={() => setTab("cards")} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-semibold transition ${tab === "cards" ? "bg-emerald-50 text-emerald-700" : "text-slate-400"}`}><Icon name="cards" />每日抽卡</button>
           </div>
